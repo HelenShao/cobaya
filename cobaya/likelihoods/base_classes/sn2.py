@@ -79,10 +79,10 @@ class SN(DataSetLikelihood):
                         raise LoggedError(self.log, 'Data file must have comment header')
                     vals = line.split()
                     for i, (col, val) in enumerate(zip(cols, vals)):
-                        if col == 'CID':
+                        if col == 'name':
                             supernovae[val] = ix
                             self.names.append(val)
-                        elif col != 'IDSURVEY':
+                        else:
                             getattr(self, col)[ix] = np.float64(val)
                     ix += 1
         ### False
@@ -253,20 +253,20 @@ class SN(DataSetLikelihood):
             for j in range(self.origlen):
                 if self.ww[j]:
                     jj += 1
-                val = float(f.readline())
-                """
+
                 if type(f.readline()) == str:
                     print("DEBUG: %d"%i)
                     print(self.origlen)
                     print("DEBUG: {}".format(f.readline()))
                     raise Exception("String!")
-                """
+                else:
+                    #print("DEBUG: %d"%i)
+                    val = float(f.readline())
+                    #val = f.readline()
                 if self.ww[i]:
                     if self.ww[j]:
                         C[ii,jj] = val
         f.close()
-
-        #print("DEBUG: " + str(self.use_abs_mag))
 
         # Return the covariance; the parent class knows to invert this
         # later to get the precision matrix that we need for the likelihood.
@@ -412,7 +412,6 @@ class SN(DataSetLikelihood):
         ### True for cosmosis
         if self.use_abs_mag:
             Mb = params_values.get('Mb', None)
-            #print("DEBUG: Sampling Mb")
 
         else:
             print("DEBUG: Not sampling Mb")

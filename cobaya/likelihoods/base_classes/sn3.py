@@ -1,7 +1,108 @@
-# Pantheon+ as implemented in cosmosis
-# Assuming m_b_corr has alpha/beta corr 
-# Only doing Mb correction (to theory) if sampled
+"""
+.. module:: sn
 
+:Synopsis: Supernovae likelihood, from CosmoMC's JLA module, for Pantheon and JLA samples.
+:Author: Alex Conley, Marc Betoule, Antony Lewis, Pablo Lemos
+         (see source for more specific authorship)
+
+This code provides the following likelihoods:
+
+- ``sn.pantheon``, for the Pantheon SN Ia sample (including Pan-STARRS1 MDS and others)
+- ``sn.jla``, for the JLA SN Ia sample, based on joint SNLS/SDSS SN Ia data
+- ``sn.jla_lite``, an alternative version of ``sn.jla``, marginalized over
+  nuisance parameters
+
+.. |br| raw:: html
+
+   <br />
+
+.. note::
+
+   - If you use ``sn.pantheon``, please cite:|br|
+     Scolnic, D. M. et al.,
+     `The Complete Light-curve Sample of Spectroscopically
+     Confirmed Type Ia Supernovae from Pan-STARRS1 and
+     Cosmological Constraints from The Combined Pantheon Sample`
+     `(arXiv:1710.00845) <https://arxiv.org/abs/1710.00845>`_
+   - If you use ``sn.jla`` or ``sn.jla_lite``, please cite:|br|
+     Betoule, M. et al.,
+     `Improved cosmological constraints from a joint analysis
+     of the SDSS-II and SNLS supernova samples`
+     `(arXiv:1401.4064) <https://arxiv.org/abs/1401.4064>`_
+
+
+Usage
+-----
+
+To use any of these likelihoods, simply mention them in the likelihoods block
+(do not use ``sn.jla`` and its `lite` version simultaneously), or add them
+using the :doc:`input generator <cosmo_basic_runs>`.
+
+The settings for each likelihood, as well as the nuisance parameters and their default
+priors (in the ``sn.jla`` case only) can be found in the ``defaults.yaml``
+files in the folder for the source code of each of these likelihoods,
+and are reproduced below.
+
+You shouldn't need to modify any of the options of these likelihoods,
+but if you really need to, just copy the ``likelihood`` block into your input ``yaml``
+file and modify whatever options you want (you can delete the rest).
+
+.. literalinclude:: ../cobaya/likelihoods/sn/pantheon.yaml
+   :language: yaml
+
+.. literalinclude:: ../cobaya/likelihoods/sn/jla.yaml
+   :language: yaml
+
+.. literalinclude:: ../cobaya/likelihoods/sn/jla_lite.yaml
+   :language: yaml
+
+
+Installation
+------------
+
+This likelihood can be installed automatically as explained in :doc:`installation_cosmo`.
+If are following the instructions there (you should!), you don't need to read the rest
+of this section.
+
+Manual installation of the SN Ia likelihoods data
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+Assuming you are installing all your
+likelihoods under ``/path/to/likelihoods``, simply do
+
+.. code:: bash
+
+   $ cd /path/to/likelihoods
+   $ git clone https://github.com/JesusTorrado/sn_data.git
+
+After this, mention the path to this likelihood when you include it in an input file as
+
+.. code-block:: yaml
+
+   likelihood:
+     sn.[pantheon|jla|jla_lite]:
+       path: /path/to/likelihoods/sn_data
+
+"""
+
+# Supernovae likelihood, from CosmoMC's JLA module. For Pantheon and JLA Supernovae,
+#  History:
+#  Written by Alex Conley, Dec 2006
+#   aconley, Jan 2007: The OpenMP stuff was causing massive slowdowns on
+#      some processors (ones with hyperthreading), so it was removed
+#   aconley, Jul 2009: Added absolute distance support
+#   aconley, May 2010: Added twoscriptm support
+#   aconley, Apr 2011: Fix some non standard F90 usage.  Thanks to
+#                       Zhiqi Huang for catching this.
+#   aconley, April 2011: zhel, zcmb read in wrong order.  Thanks to
+#                       Xiao Dong-Li and Shuang Wang for catching this
+#   mbetoule, Dec 2013: adaptation to the JLA sample
+#   AL, Mar 2014: updates for latest CosmoMC structure
+#   AL, June 2014: updated JLA_marginalize=T handling so it should work
+#   AL, March 2018: this python version
+#   PL, May 2021: Included option to use absolute magnitude from local SNe measurements.
+
+# Global
 import numpy as np
 import os
 import pandas as pd
@@ -12,6 +113,8 @@ from cobaya.likelihoods.base_classes import DataSetLikelihood
 
 _twopi = 2 * np.pi
 
+
+# noinspection PyUnresolvedReferences
 class SN(DataSetLikelihood):
     # Data type for aggregated chi2 (case sensitive)
     type = "SN"
@@ -20,31 +123,22 @@ class SN(DataSetLikelihood):
                        "github_release": "v1.3"}
 
     def init_params(self, ini):
-
-        ### twoscriptmfit = F
+        
+        # Changed! Should have twoscriptmfit=False from full_long.dataset file for Pantheon
         self.twoscriptmfit = ini.bool('twoscriptmfit')
+        self.twoscriptmfit = False
         if self.twoscriptmfit:
             scriptmcut = ini.float('scriptmcut', 10.)
 
-        ### intrinsicdisp = 0
-        assert not ini.float('intrinsicdisp', 0) and not ini.float('intrinsicdisp0', 0)
-
-        ### In jla.yaml only
+        """assert not ini.float('intrinsicdisp', 0) and not ini.float('intrinsicdisp0', 0)
         if getattr(self, "alpha_beta_names", None) is not None:
             self.alpha_name = self.alpha_beta_names[0]
             self.beta_name = self.alpha_beta_names[1]
-    
-        ### Pecz = 0, = 0.001 if not found in .dataset file
         self.pecz = ini.float('pecz', 0.001)
-        #print("DEBUG: pecz = %.3f"%self.pecz)
-
         cols = None
         self.has_third_var = False
-
-        ### full_long.dataset: data_file = Pantheon/lcparam_full_long_zhel.txt
         data_file = os.path.normpath(os.path.join(self.path, ini.string("data_file")))
         self.log.debug('Reading %s' % data_file)
-
         supernovae = {}
         self.names = []
         ix = 0
@@ -53,107 +147,83 @@ class SN(DataSetLikelihood):
             for line in lines:
                 if '#' in line:
                     cols = line[1:].split()
-                    ### Rename variable names from dataset file
                     for rename, new in zip(
-                             ["c", "x1", 'm_b_corr_err_DIAG', 'zHD',  "zHEL", 
-                             'zHDERR', 'x1ERR', 'cERR'], 
-                            ['colour', 'stretch', 'dmb', 'zcmb', 'zhel',
-                             'dz', 'dx1', 'dcolor']):
+                            ['mb', 'color', 'x1', '3rdvar', 'd3rdvar',
+                             'cov_m_s', 'cov_m_c', 'cov_s_c'],
+                            ['mag', 'colour', 'stretch', 'third_var',
+                             'dthird_var', 'cov_mag_stretch',
+                             'cov_mag_colour', 'cov_stretch_colour']):
                         if rename in cols:
                             cols[cols.index(rename)] = new
-
-                    ### self.has_third_var, has_x0_cov = False
                     self.has_third_var = 'third_var' in cols
                     has_x0_cov = 'cov_s_x0' in cols
-
                     zeros = np.zeros(len(lines) - 1)
                     self.third_var = zeros.copy()
                     self.dthird_var = zeros.copy()
                     self.set = zeros.copy()
                     for col in cols:
                         setattr(self, col, zeros.copy())
-
-                # Read subsequent lines after header, counting number of SN
                 elif line.strip():
                     if cols is None:
                         raise LoggedError(self.log, 'Data file must have comment header')
                     vals = line.split()
                     for i, (col, val) in enumerate(zip(cols, vals)):
-                        if col == 'CID':
+                        if col == 'name':
                             supernovae[val] = ix
                             self.names.append(val)
-                        elif col != 'IDSURVEY':
+                        else:
                             getattr(self, col)[ix] = np.float64(val)
                     ix += 1
-        ### False
+
         if has_x0_cov:
             sf = - 2.5 / (self.x0 * np.log(10))
             self.cov_mag_stretch = self.cov_s_x0 * sf
             self.cov_mag_colour = self.cov_c_x0 * sf
+
+        self.z_var = self.dz ** 2
+        self.mag_var = self.dmb ** 2
+        self.stretch_var = self.dx1 ** 2
+        self.colour_var = self.dcolor ** 2
+        self.thirdvar_var = self.dthird_var ** 2"""
         
-        ### Cosmosis z selected data
-        data_file = "/home/hshao/codes_and_likes_v5/data/sn_data/PantheonPlus/Pantheon+SH0ES.dat"
-        data = pd.read_csv(data_file,delim_whitespace=True)
-        self.origlen = len(data)
-
-        self.ww = (self.zcmb>0.01)
-        self.zCMB = self.zcmb[self.ww] #use the vpec corrected redshift for zCMB 
-        self.zHEL = self.zhel[self.ww]
-        self.mag = self.m_b_corr[self.ww]
-
-        ### Uncertainties squared
-        ### dz, dmb found in lcparam_full_long_zhel.txt
-        ### dx1, dcolor, dthird_var = 0 in lcparam_full_long_zhel.txt
-        self.z_var = self.dz[self.ww] ** 2
-        self.mag_var = self.dmb[self.ww] ** 2
-        self.stretch_var = self.dx1[self.ww] ** 2
-        self.colour_var = self.dcolor[self.ww] ** 2
-        self.thirdvar_var = self.dthird_var[self.ww] ** 2
-
-        ### Check number of SN
-        self.nsn = ix
+        # changed! (define self.zcmb)
+        data_file = data_file = "/home/hshao/codes_and_likes_v4/Pantheon+SH0ES.dat"
+        self.data = pd.read_csv(data_file, delim_whitespace=True)
+        self.origlen = len(self.data)
+        self.z_select = (self.data['zHD']>0.01)
+        self.zCMB = self.data['zHD'][self.z_select] # Use zHD for zCMB, following Pantheon+
+        self.zhel = self.data['zHEL'][self.z_select]
+        
+        """self.nsn = ix
         self.log.debug('Number of SN read: %s ' % self.nsn)
-
-        ### self.twoscriptmfit=False 
         if self.twoscriptmfit and not self.has_third_var:
             raise LoggedError(
                 self.log, 'twoscriptmfit was set but thirdvar information not present')
-        ### absdist_file=false
         if ini.bool('absdist_file'):
-            raise LoggedError(self.log, 'absdist_file not supported')
+            raise LoggedError(self.log, 'absdist_file not supported')"""
         
-        covmats = [
-            'mag', 'stretch', 'colour', 'mag_stretch', 'mag_colour', 'stretch_colour']
+        # changed!
+        #covmats = ['mag', 'stretch', 'colour', 'mag_stretch', 'mag_colour', 'stretch_colour']
+        name = 'mag'
         self.covs = {}
-
-        ### Pantheon: has_mag_covmat = T --> read mag_covmat_file in full_long.dataset
-        for name in covmats:
-            if ini.bool('has_%s_covmat' % name):
-                self.log.debug('Reading covmat for: %s ' % name)
-                print('Reading covmat for: %s ' % name)
-                self.covs[name] = self._read_covmat(
-                    os.path.join(self.path, ini.string('%s_covmat_file' % name)))
+        #for name in covmats:
+            #if ini.bool('has_%s_covmat' % name):
+                #self.log.debug('Reading covmat for: %s ' % name)
+                #self.covs[name] = self._read_covmat(os.path.join(self.path, ini.string('%s_covmat_file' % name)))
+        self.covs[name] = self._read_covmat("/home/hshao/codes_and_likes_v4/Pantheon+SH0ES_STAT+SYS.cov")        
         
-        ### self.alphabeta_covmat=False
-        ### Since only one covmat item ('mag')
-        self.alphabeta_covmat = (len(self.covs.items()) > 1 or
-                                 self.covs.get('mag', None) is None)
-
-        self._last_alpha = np.inf
-        self._last_beta = np.inf
-
-        ### In jla_lite.yaml only
-        self.marginalize = getattr(self, "marginalize", False)
-
+        #self.alphabeta_covmat = (len(self.covs.items()) > 1 or self.covs.get('mag', None) is None)
+        self.alphabeta_covmat = False
+        #self._last_alpha = np.inf
+        #self._last_beta = np.inf
+        #self.marginalize = getattr(self, "marginalize", False)
+        self.marginalize = False
         assert self.covs
-
-        ### Sys uncertainties, for diag of covmat - NOT USED FOR COSMOSIS
-        # jla_prep
-        zfacsq = 25.0 / np.log(10.0) ** 2
-        self.pre_vars = self.mag_var + zfacsq * self.pecz ** 2 * (
-                (1.0 + self.zCMB) / (self.zCMB * (1 + 0.5 * self.zCMB))) ** 2
         
-        ### False
+        # jla_prep
+        """zfacsq = 25.0 / np.log(10.0) ** 2
+        self.pre_vars = self.mag_var + zfacsq * self.pecz ** 2 * (
+                (1.0 + self.zcmb) / (self.zcmb * (1 + 0.5 * self.zcmb))) ** 2
         if self.twoscriptmfit:
             A1 = np.zeros(self.nsn)
             A2 = np.zeros(self.nsn)
@@ -171,8 +241,6 @@ class SN(DataSetLikelihood):
                 self.twoscriptmfit = False
             self.A1 = A1
             self.A2 = A2
-
-        ### False
         if self.marginalize:
             self.step_width_alpha = self.marginalize_params['step_width_alpha']
             self.step_width_beta = self.marginalize_params['step_width_beta']
@@ -199,48 +267,28 @@ class SN(DataSetLikelihood):
             if self.precompute_covmats:
                 for i, (alpha, beta) in enumerate(zip(self.alpha_grid, self.beta_grid)):
                     self.invcovs[i] = self.inverse_covariance_matrix(alpha, beta)
-        
-        ### Return inverse covmat (w/ delta correcction)
         elif not self.alphabeta_covmat:
-            self.inverse_covariance_matrix()
+            self.inverse_covariance_matrix()"""
 
     def get_requirements(self):
         # State requisites to the theory code
-        reqs = {"angular_diameter_distance": {"z": self.zcmb}}
-        
-        ### True for cosmosis
+        reqs = {"angular_diameter_distance": {"z": self.zCMB}}
         if self.use_abs_mag:
             reqs["Mb"] = None
-
         return reqs
 
     def _read_covmat(self, filename):
+        #cov = np.loadtxt(filename)
+        #if np.isscalar(cov[0]) and cov[0] ** 2 + 1 == len(cov):
+            #cov = cov[1:]
+        #return cov.reshape((self.nsn, self.nsn))
 
-        """
-        cov = np.loadtxt(filename)
-
-        if np.isscalar(cov[0]) and cov[0] ** 2 + 1 == len(cov):
-            cov = cov[1:]
-
-        ### Reshape: self.nsn = number of SN
-        return cov.reshape((self.nsn, self.nsn))
-        """
-
-        ################################ COSMOSIS ################################
-        """Run once at the start to build the covariance matrix for the data"""
-        #filename = self.options.get_string("covmat_file", default=default_covmat_file)
-        print("Loading Pantheon covariance from {}".format(filename))
-        
-        # The file format for the covariance has the first line as an integer
-        # indicating the number of covariance elements, and the the subsequent
-        # lines being the elements.
-        # This data file is just the systematic component of the covariance - 
-        # we also need to add in the statistical error on the magnitudes
-        # that we loaded earlier
-        
+        # changed!
+        # Trim it down (following code from Pantheon+ github)
+        filename = "/home/hshao/codes_and_likes_v4/Pantheon+SH0ES_STAT+SYS.cov"
         f = open(filename)
         line = f.readline()
-        n = int(len(self.zCMB)) # reading selected zcmb
+        n = int(len(self.zCMB))
         C = np.zeros((n,n))
         ii = -1
         jj = -1
@@ -248,39 +296,23 @@ class SN(DataSetLikelihood):
         maxe = -999
         for i in range(self.origlen):
             jj = -1
-            if self.ww[i]:
+            if self.z_select[i]:
                 ii += 1
             for j in range(self.origlen):
-                if self.ww[j]:
+                if self.z_select[j]:
                     jj += 1
                 val = float(f.readline())
-                """
-                if type(f.readline()) == str:
-                    print("DEBUG: %d"%i)
-                    print(self.origlen)
-                    print("DEBUG: {}".format(f.readline()))
-                    raise Exception("String!")
-                """
-                if self.ww[i]:
-                    if self.ww[j]:
+                if self.z_select[i]:
+                    if self.z_select[j]:
                         C[ii,jj] = val
         f.close()
-
-        #print("DEBUG: " + str(self.use_abs_mag))
-
-        # Return the covariance; the parent class knows to invert this
-        # later to get the precision matrix that we need for the likelihood.
         return C
 
-
     def inverse_covariance_matrix(self, alpha=0, beta=0):
-        ### Copy covmat with 'mag' label
         if 'mag' in self.covs:
             invcovmat = self.covs['mag'].copy()
         else:
             invcovmat = 0
-
-        ### False
         if self.alphabeta_covmat:
             if np.isclose(alpha, self._last_alpha) and np.isclose(beta, self._last_beta):
                 return self.invcov
@@ -304,20 +336,11 @@ class SN(DataSetLikelihood):
                      -2.0 * beta * self.cov_mag_colour +
                      -2.0 * alphabeta * self.cov_stretch_colour)
         
-        ### Useless for cosmosis
-        else:
-            delta = self.pre_vars
-        
-        ### delta = diagonal part of the statistical uncertainty
-        ### Removed in cosmosis
-        # np.fill_diagonal(invcovmat, invcovmat.diagonal() + delta)
-
-        ### Take inverse
+        #invcovmat = self.covs['mag'].copy()
         self.invcov = np.linalg.inv(invcovmat)
         return self.invcov
 
     def alpha_beta_logp(self, lumdists, alpha=0, beta=0, Mb=0, invcovmat=None):
-        ### False
         if self.alphabeta_covmat:
             if self.use_abs_mag:
                 self.log.warning("You seem to be using JLA with the absolute magnitude "
@@ -339,34 +362,19 @@ class SN(DataSetLikelihood):
                        beta * self.colour - estimated_scriptm)
             if invcovmat is None:
                 invcovmat = self.inverse_covariance_matrix(alpha, beta)
-        
         else:
-            ### True for cosmosis
             if self.use_abs_mag:
                 estimated_scriptm = Mb + 25
-            
             else:
-                ### Inverse of systematic uncertainties
                 invvars = 1.0 / self.pre_vars
-
-                ### Sum of invvars
                 wtval = np.sum(invvars)
-
-                ### ??
                 estimated_scriptm = np.sum((self.mag - lumdists) * invvars) / wtval
-            
-            ### Data vector? Diff between theory and observed, with correction
-            ### (self.mag - estimated_scriptm) = observed/corrected mu?
             diffmag = self.mag - lumdists - estimated_scriptm
-            
-            ### Retreive invcov
             invcovmat = self.invcov
 
-        ### Taking dot product to get chi^2
-        invvars = invcovmat.dot(diffmag) # (covmat)^-1 dot datavector
-        amarg_A = invvars.dot(diffmag) # innvars dot data vector
+        invvars = invcovmat.dot(diffmag)
+        amarg_A = invvars.dot(diffmag)
 
-        ### False
         if self.twoscriptmfit:
             # could simplify this..
             amarg_B = invvars.dot(self.A1)
@@ -385,40 +393,51 @@ class SN(DataSetLikelihood):
                         np.log(tempG / _twopi) - amarg_C * amarg_C / tempG -
                         amarg_B * amarg_B * amarg_F / (amarg_E * tempG) +
                         2.0 * amarg_B * amarg_C * amarg_D / (amarg_E * tempG))
-        ### ??
         else:
             amarg_B = np.sum(invvars)
             amarg_E = np.sum(invcovmat)
-
-            ### True for cosmosis
             if self.use_abs_mag:
                 chi2 = amarg_A + np.log(amarg_E / _twopi)
-            
-            ### ??
             else:
                 chi2 = amarg_A + np.log(amarg_E / _twopi) - amarg_B ** 2 / amarg_E
-        
-        ##
         return - chi2 / 2
 
     def logp(self, **params_values):
-
-        ### calculate theory
-        angular_diameter_distances = \
-            self.provider.get_angular_diameter_distance(self.zCMB)
-        lumdists = (5 * np.log10((1 + self.zHEL) * (1 + self.zCMB) *
-                                 angular_diameter_distances))
-
-        ### True for cosmosis
         if self.use_abs_mag:
             Mb = params_values.get('Mb', None)
-            #print("DEBUG: Sampling Mb")
-
         else:
-            print("DEBUG: Not sampling Mb")
             Mb = 0
+        
+        angular_diameter_distances = \
+            self.provider.get_angular_diameter_distance(self.zCMB)
+        lumdists = (5 * np.log10((1 + self.zhel) * (1 + self.zCMB) *
+                                 angular_diameter_distances)) + 25 + Mb
+        
+        # Retreive data
+        m_obs = self.data['m_b_corr'][self.z_select]
+        #alpha = 0.148
+        #beta  = 3.09
+        #x1    = self.data['x1'][self.z_select]
+        #c     = self.data['c'][self.z_select]
+        #M     = self.provider.get_param("M") # sampled, see paper
+        #bias  = self.data['biasCor_m_b'][self.z_select]
 
-        ### False
+        # Compute corrected mu
+        #mu_meas = m_obs + alpha*x1 - beta*c - M - bias
+        mu_meas = m_obs
+    
+        # Compute residuals 
+        D = mu_meas - lumdists
+        
+        # Define likelihood
+        invcovmat = self.inverse_covariance_matrix(alpha=0, beta=0)
+        logp = (-1/2.)*(D.T @ invcovmat @ D)
+        return logp
+
+        """if self.use_abs_mag:
+            Mb = params_values.get('Mb', None)
+        else:
+            Mb = 0
         if self.marginalize:
             # Should parallelize this loop
             for i in range(self.int_points):
@@ -430,12 +449,9 @@ class SN(DataSetLikelihood):
             return - grid_best + np.log(
                 np.sum(np.exp(- self.marge_grid[self.marge_grid != np.inf] + grid_best)) *
                 self.step_width_alpha * self.step_width_beta)
-        
         else:
-            ### False
             if self.alphabeta_covmat:
                 return self.alpha_beta_logp(lumdists, params_values[self.alpha_name],
                                             params_values[self.beta_name], Mb)
-            ### Return -chi2/2
             else:
-                return self.alpha_beta_logp(lumdists, Mb=Mb)
+                return self.alpha_beta_logp(lumdists, Mb=Mb)"""

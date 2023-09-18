@@ -1,10 +1,6 @@
-# Pantheon+ as implemented in cosmosis
-# Assuming m_b_corr has alpha/beta corr 
-# Only doing Mb correction (to theory) if sampled
-
+# Pantheon
 import numpy as np
 import os
-import pandas as pd
 
 # Local
 from cobaya.log import LoggedError
@@ -34,7 +30,8 @@ class SN(DataSetLikelihood):
             self.alpha_name = self.alpha_beta_names[0]
             self.beta_name = self.alpha_beta_names[1]
     
-        ### Pecz = 0, = 0.001 if not found in .dataset file
+        ### What is value of pecz? 
+        ### Still 0, only 0.001 if not found in .dataset file
         self.pecz = ini.float('pecz', 0.001)
         #print("DEBUG: pecz = %.3f"%self.pecz)
 
@@ -55,16 +52,18 @@ class SN(DataSetLikelihood):
                     cols = line[1:].split()
                     ### Rename variable names from dataset file
                     for rename, new in zip(
-                             ["c", "x1", 'm_b_corr_err_DIAG', 'zHD',  "zHEL", 
-                             'zHDERR', 'x1ERR', 'cERR'], 
-                            ['colour', 'stretch', 'dmb', 'zcmb', 'zhel',
-                             'dz', 'dx1', 'dcolor']):
+                            ['mb', 'color', 'x1', '3rdvar', 'd3rdvar',
+                             'cov_m_s', 'cov_m_c', 'cov_s_c'],
+                            ['mag', 'colour', 'stretch', 'third_var',
+                             'dthird_var', 'cov_mag_stretch',
+                             'cov_mag_colour', 'cov_stretch_colour']):
                         if rename in cols:
                             cols[cols.index(rename)] = new
 
                     ### self.has_third_var, has_x0_cov = False
                     self.has_third_var = 'third_var' in cols
                     has_x0_cov = 'cov_s_x0' in cols
+                    ###
 
                     zeros = np.zeros(len(lines) - 1)
                     self.third_var = zeros.copy()
@@ -79,10 +78,10 @@ class SN(DataSetLikelihood):
                         raise LoggedError(self.log, 'Data file must have comment header')
                     vals = line.split()
                     for i, (col, val) in enumerate(zip(cols, vals)):
-                        if col == 'CID':
+                        if col == 'name':
                             supernovae[val] = ix
                             self.names.append(val)
-                        elif col != 'IDSURVEY':
+                        else:
                             getattr(self, col)[ix] = np.float64(val)
                     ix += 1
         ### False
@@ -90,25 +89,15 @@ class SN(DataSetLikelihood):
             sf = - 2.5 / (self.x0 * np.log(10))
             self.cov_mag_stretch = self.cov_s_x0 * sf
             self.cov_mag_colour = self.cov_c_x0 * sf
-        
-        ### Cosmosis z selected data
-        data_file = "/home/hshao/codes_and_likes_v5/data/sn_data/PantheonPlus/Pantheon+SH0ES.dat"
-        data = pd.read_csv(data_file,delim_whitespace=True)
-        self.origlen = len(data)
-
-        self.ww = (self.zcmb>0.01)
-        self.zCMB = self.zcmb[self.ww] #use the vpec corrected redshift for zCMB 
-        self.zHEL = self.zhel[self.ww]
-        self.mag = self.m_b_corr[self.ww]
 
         ### Uncertainties squared
         ### dz, dmb found in lcparam_full_long_zhel.txt
         ### dx1, dcolor, dthird_var = 0 in lcparam_full_long_zhel.txt
-        self.z_var = self.dz[self.ww] ** 2
-        self.mag_var = self.dmb[self.ww] ** 2
-        self.stretch_var = self.dx1[self.ww] ** 2
-        self.colour_var = self.dcolor[self.ww] ** 2
-        self.thirdvar_var = self.dthird_var[self.ww] ** 2
+        self.z_var = self.dz ** 2
+        self.mag_var = self.dmb ** 2
+        self.stretch_var = self.dx1 ** 2
+        self.colour_var = self.dcolor ** 2
+        self.thirdvar_var = self.dthird_var ** 2
 
         ### Check number of SN
         self.nsn = ix
@@ -130,12 +119,10 @@ class SN(DataSetLikelihood):
         for name in covmats:
             if ini.bool('has_%s_covmat' % name):
                 self.log.debug('Reading covmat for: %s ' % name)
-                print('Reading covmat for: %s ' % name)
                 self.covs[name] = self._read_covmat(
                     os.path.join(self.path, ini.string('%s_covmat_file' % name)))
         
-        ### self.alphabeta_covmat=False
-        ### Since only one covmat item ('mag')
+        ### Since only one covmat item ('mag'), self.alphabeta_covmat=False
         self.alphabeta_covmat = (len(self.covs.items()) > 1 or
                                  self.covs.get('mag', None) is None)
 
@@ -147,11 +134,11 @@ class SN(DataSetLikelihood):
 
         assert self.covs
 
-        ### Sys uncertainties, for diag of covmat - NOT USED FOR COSMOSIS
+        ### Systematic uncertainties, for diag of covmat
         # jla_prep
         zfacsq = 25.0 / np.log(10.0) ** 2
         self.pre_vars = self.mag_var + zfacsq * self.pecz ** 2 * (
-                (1.0 + self.zCMB) / (self.zCMB * (1 + 0.5 * self.zCMB))) ** 2
+                (1.0 + self.zcmb) / (self.zcmb * (1 + 0.5 * self.zcmb))) ** 2
         
         ### False
         if self.twoscriptmfit:
@@ -208,15 +195,13 @@ class SN(DataSetLikelihood):
         # State requisites to the theory code
         reqs = {"angular_diameter_distance": {"z": self.zcmb}}
         
-        ### True for cosmosis
+        ### False
         if self.use_abs_mag:
             reqs["Mb"] = None
 
         return reqs
 
     def _read_covmat(self, filename):
-
-        """
         cov = np.loadtxt(filename)
 
         if np.isscalar(cov[0]) and cov[0] ** 2 + 1 == len(cov):
@@ -224,54 +209,6 @@ class SN(DataSetLikelihood):
 
         ### Reshape: self.nsn = number of SN
         return cov.reshape((self.nsn, self.nsn))
-        """
-
-        ################################ COSMOSIS ################################
-        """Run once at the start to build the covariance matrix for the data"""
-        #filename = self.options.get_string("covmat_file", default=default_covmat_file)
-        print("Loading Pantheon covariance from {}".format(filename))
-        
-        # The file format for the covariance has the first line as an integer
-        # indicating the number of covariance elements, and the the subsequent
-        # lines being the elements.
-        # This data file is just the systematic component of the covariance - 
-        # we also need to add in the statistical error on the magnitudes
-        # that we loaded earlier
-        
-        f = open(filename)
-        line = f.readline()
-        n = int(len(self.zCMB)) # reading selected zcmb
-        C = np.zeros((n,n))
-        ii = -1
-        jj = -1
-        mine = 999
-        maxe = -999
-        for i in range(self.origlen):
-            jj = -1
-            if self.ww[i]:
-                ii += 1
-            for j in range(self.origlen):
-                if self.ww[j]:
-                    jj += 1
-                val = float(f.readline())
-                """
-                if type(f.readline()) == str:
-                    print("DEBUG: %d"%i)
-                    print(self.origlen)
-                    print("DEBUG: {}".format(f.readline()))
-                    raise Exception("String!")
-                """
-                if self.ww[i]:
-                    if self.ww[j]:
-                        C[ii,jj] = val
-        f.close()
-
-        #print("DEBUG: " + str(self.use_abs_mag))
-
-        # Return the covariance; the parent class knows to invert this
-        # later to get the precision matrix that we need for the likelihood.
-        return C
-
 
     def inverse_covariance_matrix(self, alpha=0, beta=0):
         ### Copy covmat with 'mag' label
@@ -303,14 +240,13 @@ class SN(DataSetLikelihood):
                      betasq * self.colour_var + 2.0 * alpha * self.cov_mag_stretch +
                      -2.0 * beta * self.cov_mag_colour +
                      -2.0 * alphabeta * self.cov_stretch_colour)
-        
-        ### Useless for cosmosis
+        ### See above
         else:
             delta = self.pre_vars
         
         ### delta = diagonal part of the statistical uncertainty
-        ### Removed in cosmosis
-        # np.fill_diagonal(invcovmat, invcovmat.diagonal() + delta)
+        ### https://arxiv.org/pdf/1606.01779.pdf
+        np.fill_diagonal(invcovmat, invcovmat.diagonal() + delta)
 
         ### Take inverse
         self.invcov = np.linalg.inv(invcovmat)
@@ -341,7 +277,7 @@ class SN(DataSetLikelihood):
                 invcovmat = self.inverse_covariance_matrix(alpha, beta)
         
         else:
-            ### True for cosmosis
+            ### False
             if self.use_abs_mag:
                 estimated_scriptm = Mb + 25
             
@@ -356,13 +292,12 @@ class SN(DataSetLikelihood):
                 estimated_scriptm = np.sum((self.mag - lumdists) * invvars) / wtval
             
             ### Data vector? Diff between theory and observed, with correction
-            ### (self.mag - estimated_scriptm) = observed/corrected mu?
             diffmag = self.mag - lumdists - estimated_scriptm
             
             ### Retreive invcov
             invcovmat = self.invcov
 
-        ### Taking dot product to get chi^2
+        ### ??
         invvars = invcovmat.dot(diffmag) # (covmat)^-1 dot datavector
         amarg_A = invvars.dot(diffmag) # innvars dot data vector
 
@@ -390,7 +325,7 @@ class SN(DataSetLikelihood):
             amarg_B = np.sum(invvars)
             amarg_E = np.sum(invcovmat)
 
-            ### True for cosmosis
+            ### False
             if self.use_abs_mag:
                 chi2 = amarg_A + np.log(amarg_E / _twopi)
             
@@ -405,17 +340,15 @@ class SN(DataSetLikelihood):
 
         ### calculate theory
         angular_diameter_distances = \
-            self.provider.get_angular_diameter_distance(self.zCMB)
-        lumdists = (5 * np.log10((1 + self.zHEL) * (1 + self.zCMB) *
+            self.provider.get_angular_diameter_distance(self.zcmb)
+        lumdists = (5 * np.log10((1 + self.zhel) * (1 + self.zcmb) *
                                  angular_diameter_distances))
 
-        ### True for cosmosis
+        ### False
         if self.use_abs_mag:
             Mb = params_values.get('Mb', None)
-            #print("DEBUG: Sampling Mb")
 
         else:
-            print("DEBUG: Not sampling Mb")
             Mb = 0
 
         ### False

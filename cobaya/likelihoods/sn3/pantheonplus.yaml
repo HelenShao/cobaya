@@ -10,14 +10,14 @@ dataset_params:
 # Aliases for automatic covariance matrix
 aliases: [Pantheon+, PantheonPlus, PantheonP, Pantheonplus]
 # Use absolute magnitude
-use_abs_mag: False # Changed from False
+use_abs_mag: False
 # Speed in evaluations/second
 speed: 100
 #params:
-  #Mb:
+  #M:
     #prior:
       #dist: uniform
       #min: -21.0 
       #max: -18.0
-    #proposal: -19.0
-    #latex: Mb
+    #proposal: -19.3   
+    #latex: M
